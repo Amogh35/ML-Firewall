@@ -1,0 +1,86 @@
+import asyncio
+
+nodes = {}
+
+
+async def handle_connection(reader, writer):
+    address = writer.get_extra_info('peername')
+    print(f"Received connection from {address}")
+
+    node_id = len(nodes) + 1
+    nodes[node_id] = (reader, writer)
+
+    try:
+        while True:
+            data = await reader.read(100)
+            message = data.decode()
+
+            if not data:
+                break
+
+            print(f"Received message from {address}: {message}")
+
+            await broadcast(message, writer)
+
+    except asyncio.CancelledError:
+        pass
+    except ConnectionError:
+        pass
+    finally:
+        print(f"Node {address} disconnected")
+        if node_id in nodes:
+            del nodes[node_id]
+        writer.close()
+
+
+async def broadcast(message, sender):
+    for node_id, (reader, writer) in nodes.items():
+        if writer != sender:
+            try:
+                writer.write(message.encode())
+                await writer.drain()
+            except ConnectionError:
+                print(f"Node {writer.get_extra_info('peername')} is unreachable.")
+                if node_id in nodes:
+                    del nodes[node_id]
+
+
+async def start_server():
+    server = await asyncio.start_server(
+        handle_connection, '127.0.0.1', 8888)
+
+    async with server:
+        await server.serve_forever()
+
+
+async def start_nodes():
+    for i in range(5):
+        try:
+            reader, writer = await asyncio.open_connection('127.0.0.1', 8888)
+            nodes[i + 1] = (reader, writer)
+            asyncio.create_task(handle_node(nodes[i + 1]))
+        except ConnectionRefusedError:
+            print("Failed to connect to the server.")
+
+
+async def handle_node(node):
+    while True:
+        message = f"Node {node[1].get_extra_info('sockname')} sending data"
+        try:
+            node[1].write(message.encode())
+            await node[1].drain()
+        except ConnectionError:
+            print(f"Node {node[1].get_extra_info('peername')} is unreachable.")
+            break
+        await asyncio.sleep(2)
+
+
+async def main():
+    server_task = asyncio.create_task(start_server())
+    node_task = asyncio.create_task(start_nodes())
+
+    await asyncio.gather(server_task, node_task)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
